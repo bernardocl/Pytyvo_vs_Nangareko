@@ -1,0 +1,146 @@
+---
+title: "Cruce Beneficiados Ñangareko y Pytyvo"
+date: '`r Sys.Date()`'
+output: html_notebook
+---
+
+```{r setup}
+options(java.parameters = "-Xmx8192m") 
+
+library(googledrive)
+library(tidyverse)
+library(readxl)
+library(tabulizer)
+```
+
+Me llamó la atención que hubiesen dos iniciativas de ayuda por parte del
+gobierno, me refiero a los
+programas [Ñangareko](https://www.sen.gov.py/index.php/programas/nangareko) y
+[Pytyvo](https://beneficiarios.paraguay.gov.py/)
+
+De curioso busco responder 3 preguntas:
+
+1. Cuantos beneficiados hubo en cada programa?
+2. En qué departamentos residen los beneficiados?
+3. Hubo beneficiados por ambos programas?
+
+La listas está publicadas vía google drive.
+```{r get_files}
+drive_download(
+  file = as_id('1bN_v0Nd31d2oDs4QHd4dguhm6Wa4tnua'),
+  path = 'data/lista_ñangareko.pdf',
+  overwrite = TRUE
+)
+
+drive_download(
+  file = as_id('1cL6Ltobb7M0Nr3KuWTbnAvzyW6z75849'),
+  path = 'data/lista_pytyvo.xlsx',
+  overwrite = TRUE
+  )
+```
+
+
+Estoy muy agradecido por el formato en el que se publicó la lista de Pytyvo por
+lo fácil de es cargar y manipular, pero no puedo decir lo mismo del horrible
+pdf publicado por la gende del programa Ñangareko.
+
+```{r data_wrangling}
+df_pytyvo <- read_excel('data/lista_pytyvo.xlsx') %>%
+  as_tibble() %>%
+  rename_all(~c('num_cedula', 'nombre_completo', 'departamento', 'distrito')) %>%
+  mutate_if(is.numeric, format, scientific = FALSE) %>% 
+  mutate_all(str_trim)
+
+df_nhanga <- extract_tables('data/lista_ñangareko.pdf') %>% 
+  map_dfr(as.data.frame, stringsAsFactors = FALSE) %>% 
+  as_tibble() %>% 
+  slice(-(1:2)) %>% 
+  rename_all(~c('num_cedula', 'nombre_completo', 'departamento', 'distrito')) %>%
+  mutate_all(str_trim)
+```
+
+
+Después de pelearme un rato con el archivo pdf, ya tengo las listas en un 
+formato manejable, y puedo responder mi primera pregunta:
+
+La cantidad de beneficiados por Ñangarengo es
+`r nrow(df_nhanga) %>% format(big.mark = '.', decimal.mark = ',')`.
+
+La cantidad de beneficiados por Pytyvo es 
+`r nrow(df_pytyvo) %>% format(big.mark = '.', decimal.mark = ',')`.
+
+Aparentemente la lista de Ñangareko no está actualizada, porque comunicaron que
+a la fecha los beneficiados son [242.376](https://www.sen.gov.py/index.php/noticias/nangareko-150705-acreditaciones-302565-notificaciones-3200000-kilos-de-alimentos-entregados).
+
+Al parsear el texto del pdf hubo algunos problemas y normalice a mano los
+nombres de los departamentos, para responder la segunda pregunta.
+
+```{r data_cleaning}
+df_pytyvo <- df_pytyvo %>% 
+  mutate(dpto_clean = na_if(departamento, 'NO SUMINISTRADO'))
+
+df_nhanga <-  df_nhanga %>% 
+  mutate(
+    dpto_clean = 
+      str_replace(departamento, '.*EEMBU.*', 'ÑEEMBUCU') %>% 
+      str_replace('.*RA+L.*',    'CENTRAL') %>% 
+      str_replace('.*CION.*',    'ASUNCIÓN') %>% 
+      str_replace('.*PARAN.*',   'ALTO PARANÁ') %>% 
+      str_replace('.*ITE?A.*',   'ITAPUA') %>% 
+      str_replace('PARAGUAR.*',  'PARAGUARI')
+  )
+```
+
+
+Beneficiados reportados de Pytyvo por departamento:
+```{r ans_2_Pytyvo}
+# Beneficiados reportados por Pytyvo
+df_pytyvo %>% 
+  janitor::tabyl(dpto_clean) %>% 
+  arrange(desc(valid_percent)) %>% 
+  janitor::adorn_totals() %>% 
+  mutate_at(vars(matches('percent')), ~round(.x*100, 2)) %>%  
+  as_tibble() %>% 
+  knitr::kable() %>% 
+  kableExtra::kable_styling()
+```
+
+Beneficiados reportados de Ñangareko por departamento:
+```{r ans_2_Nhangareko}
+# Beneficiados reportados por Ñangareko
+df_nhanga %>% 
+  janitor::tabyl(dpto_clean) %>% 
+  arrange(desc(n)) %>% 
+  janitor::adorn_totals() %>% 
+  mutate_at(vars(matches('percent')), ~round(.x*100, 2)) %>%  
+  as_tibble() %>% 
+  knitr::kable() %>% 
+  kableExtra::kable_styling()
+```
+
+
+Por último al cruzar las listas puedo verificar si hubo beneficiados por
+ambos programas.
+
+```{r data_transform}
+df_join <- 
+  inner_join(
+    select(df_pytyvo, num_cedula, dpto_clean),
+    select(df_nhanga, num_cedula),
+    by = 'num_cedula',
+    suffix = c('_pytyvo', '_nhangareko')
+  )
+
+df_join %>% 
+  janitor::tabyl(dpto_clean) %>% 
+  arrange(desc(valid_percent)) %>% 
+  mutate_at(vars(matches('percent')), ~round(.x*100, 2)) %>% 
+  janitor::adorn_totals() %>% 
+  as_tibble() %>% 
+  knitr::kable() %>% 
+  kableExtra::kable_styling()
+```
+
+Así que hubo un total de
+`r nrow(df_join) %>% format(big.mark = '.', decimal.mark = ',')`
+personas que fueron beneficiadas por ambos programas según los reportes.
